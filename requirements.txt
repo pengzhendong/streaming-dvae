@@ -1,0 +1,4 @@
+modelscope
+pyyaml
+streaming_vocos
+vector_quantize_pytorch
