@@ -24,33 +24,31 @@ class StreamingDVAE:
     def __init__(
         self,
         repo_id: str = "pengzhendong/dvae",
+        device: str = "cpu",
         chunk_size_ms: int = 200,
         padding_ms: int = 40,
     ):
+        self.device = device
         repo_dir = snapshot_download(repo_id)
         config = yaml.safe_load(open(f"{repo_dir}/config.yaml"))
         weights_path = f"{repo_dir}/pytorch_model.bin"
         weights = torch.load(weights_path, weights_only=True, mmap=True)
 
-        self.dvae = DVAE(config["decoder"], config["encoder"], config["vq"])
-        self.dvae.load_state_dict(weights)
-        self.vocos = StreamingVocos()
-
+        dvae = DVAE(config["decoder"], config["encoder"], config["vq"])
+        dvae.load_state_dict(weights)
+        self.dvae = dvae.to(self.device)
+        self.vocos = StreamingVocos(device=self.device)
         self.chunk_size = int(chunk_size_ms / 10 / 2)
         self.padding = int(padding_ms / 10 / 2)
 
-        self.cur_idx = 0
+        self.cur_idx = -1
         self.num_quantizers = len(config["vq"]["levels"])
-        self.caches_len = self.chunk_size + 2 * self.padding
-        self.caches = torch.zeros(
-            (1, self.num_quantizers, self.caches_len), dtype=torch.long
-        )
+        self.caches_shape = (1, self.num_quantizers, self.chunk_size + 2 * self.padding)
+        self.caches = torch.zeros(self.caches_shape, dtype=torch.long).to(self.device)
 
     def reset(self):
-        self.cur_idx = 0
-        self.caches = torch.zeros(
-            (1, self.num_quantizers, self.caches_len), dtype=torch.long
-        )
+        self.cur_idx = -1
+        self.caches = torch.zeros(self.caches_shape, dtype=torch.long).to(self.device)
 
     def extract_features(self, audio: torch.Tensor):
         return self.vocos.feature_extractor(audio)
@@ -58,9 +56,9 @@ class StreamingDVAE:
     def encode(self, audio: torch.Tensor):
         return self.dvae(audio, mode="encode")
 
-    def decode(self, codes: torch.Tensor, to_audio: bool = False):
+    def decode(self, codes: torch.Tensor, to_mel: bool = False):
         mel = self.dvae(codes, mode="decode")
-        return mel if not to_audio else self.vocos.decode(mel)
+        return mel if to_mel else self.vocos.decode(mel)
 
     def get_size(self):
         """
@@ -71,18 +69,31 @@ class StreamingDVAE:
             return 0
         return effective_size % self.chunk_size or self.chunk_size
 
-    def streaming_decode(
-        self, codes: torch.Tensor, is_last: bool = False, to_audio: bool = False
-    ):
+    def decode_caches(self, to_mel: bool = False):
+        cur_size = self.get_size()
+        if cur_size == 0:
+            if to_mel:
+                return torch.empty().to(self.device)
+            return self.vocos.decode_caches()
+        mel = self.decode(self.caches, to_mel=True)
+        mel = mel[:, :, self.padding * 2 :]
+        mel = mel[:, :, (self.chunk_size - cur_size) * 2 :]
+        self.reset()
+        if to_mel:
+            return mel
+        audios = list(self.vocos.streaming_decode(mel, is_last=True))
+        return torch.cat(audios, dim=1)
+
+    def streaming_decode(self, codes: torch.Tensor, to_mel=False, is_last=False):
         for idx, code in enumerate(torch.unbind(codes, dim=2)):
             self.caches = torch.roll(self.caches, shifts=-1, dims=2)
             self.caches[:, :, -1] = code
+            self.cur_idx += 1
             is_last_code = is_last and idx == codes.shape[2] - 1
             cur_size = self.get_size()
-            self.cur_idx += 1
             if cur_size != self.chunk_size and not is_last_code:
                 continue
-            mel = self.decode(self.caches)
+            mel = self.decode(self.caches, to_mel=True)
             mel = mel[:, :, self.padding * 2 :]
             if cur_size != self.chunk_size:
                 mel = mel[:, :, (self.chunk_size - cur_size) * 2 :]
@@ -90,8 +101,7 @@ class StreamingDVAE:
                 mel = mel[:, :, : self.chunk_size * 2]
             else:
                 self.reset()
-
-            if not to_audio:
+            if to_mel:
                 yield mel
             else:
                 for audio in self.vocos.streaming_decode(mel, is_last):
@@ -103,16 +113,16 @@ class StreamingDVAE:
         audio, sr = torchaudio.load(wav_path)
         if audio.size(0) > 1:
             audio = audio.mean(dim=0, keepdim=True)
+        audio = audio.to(self.device)
         audio = torchaudio.functional.resample(audio, orig_freq=sr, new_freq=24000)
         mel = self.extract_features(audio)
         codes = self.encode(audio[0])
 
         mel_hat = []
-        for idx, code in enumerate(torch.unbind(codes, dim=2)):
-            is_last = idx == codes.shape[2] - 1
-            mel_hat += self.streaming_decode(code[:, :, None], is_last=is_last)
+        for code in torch.unbind(codes, dim=2):
+            mel_hat += self.streaming_decode(code[:, :, None], to_audio=False)
+        mel_hat.append(self.decode_caches())
         mel_hat = torch.cat(mel_hat, dim=2)
-
-        t = min(mel.shape[-1], mel_hat.shape[-1])
+        t = min(mel.shape[2], mel_hat.shape[2])
         similarity = torch.cosine_similarity(mel[:, :, :t], mel_hat).mean()
-        print(mel.shape[1], mel_hat.shape[1], similarity)
+        print(mel.shape[2], mel_hat.shape[2], similarity)
