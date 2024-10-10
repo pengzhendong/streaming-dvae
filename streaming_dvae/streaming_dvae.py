@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+
 import torch
 import yaml
 from modelscope import snapshot_download
@@ -25,8 +27,10 @@ class StreamingDVAE:
         self,
         repo_id: str = "pengzhendong/dvae",
         device: str = "cpu",
-        chunk_size_ms: int = 200,
+        chunk_size_ms: int = None,
         padding_ms: int = 40,
+        vocos_chunk_size_ms: int = 300,
+        vocos_padding_ms: int = None,
     ):
         self.device = device
         repo_dir = snapshot_download(repo_id)
@@ -37,8 +41,17 @@ class StreamingDVAE:
         dvae = DVAE(config["decoder"], config["encoder"], config["vq"])
         dvae.load_state_dict(weights)
         self.dvae = dvae.to(self.device)
-        self.vocos = StreamingVocos(device=self.device)
-        self.chunk_size = int(chunk_size_ms / 10 / 2)
+
+        self.vocos = StreamingVocos(
+            device=self.device,
+            chunk_size_ms=vocos_chunk_size_ms,
+            padding_ms=vocos_padding_ms,
+        )
+        if chunk_size_ms is None:
+            chunk_size = self.vocos.chunk_size + self.vocos.padding
+        else:
+            chunk_size = chunk_size_ms / 10
+        self.chunk_size = int(math.ceil(chunk_size / 2))
         self.padding = int(padding_ms / 10 / 2)
 
         self.cur_idx = -1
@@ -73,7 +86,7 @@ class StreamingDVAE:
         cur_size = self.get_size()
         if cur_size == 0:
             if to_mel:
-                return torch.empty().to(self.device)
+                return torch.empty(1, self.num_quantizers, 0).to(self.device)
             return self.vocos.decode_caches()
         mel = self.decode(self.caches, to_mel=True)
         mel = mel[:, :, self.padding * 2 :]
@@ -120,8 +133,8 @@ class StreamingDVAE:
 
         mel_hat = []
         for code in torch.unbind(codes, dim=2):
-            mel_hat += self.streaming_decode(code[:, :, None], to_audio=False)
-        mel_hat.append(self.decode_caches())
+            mel_hat += self.streaming_decode(code[:, :, None], to_mel=True)
+        mel_hat.append(self.decode_caches(to_mel=True))
         mel_hat = torch.cat(mel_hat, dim=2)
         t = min(mel.shape[2], mel_hat.shape[2])
         similarity = torch.cosine_similarity(mel[:, :, :t], mel_hat).mean()
