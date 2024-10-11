@@ -22,6 +22,9 @@ from streaming_vocos import StreamingVocos
 from .dvae import DVAE
 
 
+dvae_models = {}
+
+
 class StreamingDVAE:
     def __init__(
         self,
@@ -33,14 +36,16 @@ class StreamingDVAE:
         vocos_padding_ms: int = None,
     ):
         self.device = device
-        repo_dir = snapshot_download(repo_id)
-        config = yaml.safe_load(open(f"{repo_dir}/config.yaml"))
-        weights_path = f"{repo_dir}/pytorch_model.bin"
-        weights = torch.load(weights_path, weights_only=True, mmap=True)
-
-        dvae = DVAE(config["decoder"], config["encoder"], config["vq"])
-        dvae.load_state_dict(weights)
-        self.dvae = dvae.to(self.device)
+        key = f"{repo_id}-{device}"
+        if key not in dvae_models:
+            repo_dir = snapshot_download(repo_id)
+            config = yaml.safe_load(open(f"{repo_dir}/config.yaml"))
+            weights_path = f"{repo_dir}/pytorch_model.bin"
+            weights = torch.load(weights_path, weights_only=True, mmap=True)
+            model = DVAE(config["decoder"], config["encoder"], config["vq"])
+            model.load_state_dict(weights)
+            dvae_models[key] = (model.to(device), len(config["vq"]["levels"]))
+        self.dvae, self.num_quantizers = dvae_models[key]
 
         self.vocos = StreamingVocos(
             device=self.device,
@@ -55,7 +60,6 @@ class StreamingDVAE:
         self.padding = int(padding_ms / 10 / 2)
 
         self.cur_idx = -1
-        self.num_quantizers = len(config["vq"]["levels"])
         self.caches_shape = (1, self.num_quantizers, self.chunk_size + 2 * self.padding)
         self.caches = torch.zeros(self.caches_shape, dtype=torch.long).to(self.device)
 
