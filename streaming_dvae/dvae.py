@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional
+from typing import Optional
 
 import torch
 from torch import nn
@@ -63,10 +63,6 @@ class DVAE(nn.Module):
 
         vq_feats = self.vq_layer._embed(inp)
         vq_feats = (
-            vq_feats.view(
-                (vq_feats.size(0), 2, vq_feats.size(1) // 2, vq_feats.size(2))
-            )
-            .permute(0, 2, 3, 1)
-            .flatten(2)
+            vq_feats.view((vq_feats.size(0), 2, vq_feats.size(1) // 2, vq_feats.size(2))).permute(0, 2, 3, 1).flatten(2)
         )
         return self.out_conv(self.decoder(x=vq_feats)) * self.coef

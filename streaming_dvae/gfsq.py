@@ -24,9 +24,7 @@ class GFSQ(nn.Module):
     def __init__(self, dim: int, levels: List[int], G: int, R: int):
         # GFSQ Block modified from ChatTTS.
         super(GFSQ, self).__init__()
-        self.quantizer = GroupedResidualFSQ(
-            dim=dim, levels=list(levels), num_quantizers=R, groups=G
-        )
+        self.quantizer = GroupedResidualFSQ(dim=dim, levels=list(levels), num_quantizers=R, groups=G)
         self.n_ind = math.prod(levels)
         self.G = G
         self.R = R

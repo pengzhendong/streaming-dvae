@@ -21,7 +21,6 @@ from streaming_vocos import StreamingVocos
 
 from .dvae import DVAE
 
-
 dvae_models = {}
 
 

@@ -13,3 +13,5 @@
 # limitations under the License.
 
 from .streaming_dvae import StreamingDVAE
+
+__all__ = ["StreamingDVAE"]

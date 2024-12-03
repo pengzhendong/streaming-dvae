@@ -36,14 +36,10 @@ class ConvNeXtBlock(nn.Module):
             groups=dim,
         )  # depthwise conv
         self.norm = nn.LayerNorm(dim, eps=1e-6)
-        self.pwconv1 = nn.Linear(
-            dim, intermediate_dim
-        )  # pointwise/1x1 convs, implemented with linear layers
+        self.pwconv1 = nn.Linear(dim, intermediate_dim)  # pointwise/1x1 convs, implemented with linear layers
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(intermediate_dim, dim)
-        self.gamma = nn.Parameter(
-            layer_scale_init_value * torch.ones(dim), requires_grad=True
-        )
+        self.gamma = nn.Parameter(layer_scale_init_value * torch.ones(dim), requires_grad=True)
 
     def forward(self, x: torch.Tensor, cond=None) -> torch.Tensor:
         residual = x
@@ -81,10 +77,7 @@ class DVAEDecoder(nn.Module):
             nn.Conv1d(bn_dim, hidden, 3, 1, 1),
         )
         self.decoder_block = nn.ModuleList(
-            [
-                ConvNeXtBlock(hidden, hidden * 4, kernel, dilation)
-                for _ in range(n_layer)
-            ]
+            [ConvNeXtBlock(hidden, hidden * 4, kernel, dilation) for _ in range(n_layer)]
         )
         self.conv_out = nn.Conv1d(hidden, odim, kernel_size=1, bias=False)
 
